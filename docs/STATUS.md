@@ -2,8 +2,7 @@
 
 ## Where things stand
 
-Nothing is committed yet: every file in the repo is untracked. The first
-commit should be the current state.
+Initial commit 398310b, pushed to GitHub on 2026-11-04.
 
 History: a 2026-10-23 review found the original code broken and unsafe; that
 was fixed and an egress gateway added (2026-10-24). On 2026-11-04 the project
@@ -53,7 +52,7 @@ builder:
 
 ## Open items
 
-- [ ] Commit the current state.
+- [x] Commit the current state (398310b).
 - [ ] Test on the NAS: `./setup.sh`, add/serve/delete, restart the NAS.
 - [ ] Pin base image digests (`alpine:3.20` x2, `python:3.12-slim`).
 - [ ] FTP support, if needed: its data connections go to a server-chosen
