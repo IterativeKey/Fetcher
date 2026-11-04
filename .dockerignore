@@ -1,0 +1,11 @@
+# The api image is built from the repo root; never send secrets or data.
+.env
+.env.*
+.git
+data/
+downloads/
+**/__pycache__
+qpkg/
+packaging/
+docs/
+scripts/

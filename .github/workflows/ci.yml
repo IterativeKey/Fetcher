@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Shell syntax (all .sh in repo)
+        run: |
+          for f in $(git ls-files '*.sh'); do
+            # setup.sh must run on BusyBox: check it with a POSIX shell too
+            case $f in setup.sh) dash -n "$f" || { echo "POSIX FAIL: $f"; exit 1; } ;; esac
+            bash -n "$f" || { echo "SYNTAX FAIL: $f"; exit 1; }
+          done
+
+      - name: Python syntax
+        run: python3 -m compileall -q api/app egress
+
+      - name: JS syntax + formatter smoke test
+        run: |
+          node --check web/app.js
+          # --check can't catch runtime errors (e.g. reassigning a const)
+          node -e '
+            const src = require("fs").readFileSync("web/app.js", "utf8");
+            eval(src.match(/function fmtSize[\s\S]*?\n}\n/)[0]);
+            for (const [n, want] of [["0","0 B"],["512","512 B"],["3145728","3.0 MiB"]])
+              if (fmtSize(n) !== want) throw new Error(`fmtSize(${n}) = ${fmtSize(n)}, want ${want}`);'
+
+      - name: Compose file is valid
+        run: |
+          printf 'ARIA2_RPC_SECRET=ci\nFETCHER_API_TOKEN=ci\nDOWNLOAD_DIR=/tmp/dl\nDATA_DIR=/tmp/data\n' > .env
+          docker compose config -q
+
+      - name: Compose file is valid for docker-compose v1 (older NAS firmware)
+        run: |
+          python3 -m venv /tmp/uv && /tmp/uv/bin/pip install --quiet uv==0.13.5
+          /tmp/uv/bin/uvx --python 3.9 --with PyYAML==5.3.1 --with docker==6.1.3 --with requests==2.31.0 \
+              --with 'urllib3<2' --from docker-compose==1.29.2 docker-compose config -q
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Trivy fetcher-aria2
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fetcher-aria2
+          scanners: vuln,secret,config
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Trivy fetcher-egress
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fetcher-egress
+          scanners: vuln,secret,config
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Trivy fetcher-api
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fetcher-api
+          scanners: vuln,secret,config
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Image layer audit (visible in build log)
+        run: |
+          docker history --no-trunc fetcher-aria2
+          docker history --no-trunc fetcher-api
+          docker history --no-trunc fetcher-egress

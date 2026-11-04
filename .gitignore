@@ -1,0 +1,19 @@
+.env
+*.qpkg
+node_modules/
+__pycache__/
+*.pyc
+packaging/qnap/build/
+# copies bundled by packaging/qnap/build.sh
+packaging/qnap/shared/aria2/
+packaging/qnap/shared/api/
+packaging/qnap/shared/egress/
+packaging/qnap/shared/web/
+packaging/qnap/shared/docker-compose.yml
+packaging/qnap/shared/.env.example
+packaging/qnap/shared/.dockerignore
+packaging/qnap/shared/setup.sh
+
+# local runtime folders (defaults in .env.example)
+data/
+downloads/

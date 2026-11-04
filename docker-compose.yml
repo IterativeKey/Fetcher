@@ -1,0 +1,159 @@
+# Fetcher. Works with docker-compose v1 (1.21+, as shipped on older NAS
+# firmware) and with `docker compose` v2. File format 2.4 is the newest one
+# v1 understands that still has every option used here; v2 just notes that
+# the `version` key is unnecessary.
+#
+# Run ./setup.sh for a first-time .env, or copy .env.example to .env.
+#
+# Who can reach what (internal = no route outside the network):
+#
+#   browser -> frontnet -> api -> aria2rpc (internal) -> aria2
+#                           api -> ctlnet (internal)   -> egress control port
+#                         aria2 -> proxynet (internal) -> egress proxy -> internet
+#
+# aria2 is ONLY on internal networks, so the egress gateway is its sole way
+# out: every connection it makes is allowlisted and logged there.
+version: "2.4"
+
+networks:
+  # Where the UI/API port is published. Only the api container is on it.
+  frontnet:
+
+  # The gateway's outbound route. Only the egress container is on it.
+  outbound:
+
+  aria2rpc:
+    internal: true
+  proxynet:
+    internal: true
+  ctlnet:
+    internal: true
+
+services:
+  aria2:
+    # Our own image built from pinned official alpine + distro aria2.
+    # See docs/image-security.md for how this image is verified.
+    build: ./aria2
+    image: fetcher-aria2
+    container_name: fetcher-aria2
+    restart: unless-stopped
+    depends_on:
+      - egress
+    networks:
+      - aria2rpc
+      - proxynet
+    environment:
+      - ARIA2_RPC_SECRET=${ARIA2_RPC_SECRET}
+      - RPC_PORT=6800
+      - ARIA2_PROXY=http://egress:3128
+      # Speed: segmented downloads across multiple connections per server
+      - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-5}
+      - MAX_CONNECTION_PER_SERVER=${MAX_CONNECTION_PER_SERVER:-8}
+      - SPLIT=${SPLIT:-8}
+      - MIN_SPLIT_SIZE=4M
+      - DISK_CACHE=64M
+      # Files land owned by this user/group, which must be able to write to
+      # DOWNLOAD_DIR (the download folder is never chowned).
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    volumes:
+      # Engine state (config + session file -> resumable across restarts).
+      - ${DATA_DIR:-./data}/aria2:/config
+      # The ONLY host directory the download stack can touch
+      - ${DOWNLOAD_DIR:-./downloads}:/downloads
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      # entrypoint: chown /config, then su-exec down to $PUID:$PGID
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  egress:
+    # Allowlisting CONNECT proxy + connection log. Stdlib Python on official
+    # alpine; see egress/egress.py.
+    build: ./egress
+    image: fetcher-egress
+    container_name: fetcher-egress
+    restart: unless-stopped
+    networks:
+      - outbound
+      - proxynet
+      - ctlnet
+    environment:
+      # Allow links to private/LAN addresses (e.g. another box at home).
+      - FETCHER_ALLOW_LAN=${FETCHER_ALLOW_LAN:-false}
+      # A host stays allowed this long after its last use.
+      - FETCHER_ALLOW_TTL_DAYS=${FETCHER_ALLOW_TTL_DAYS:-7}
+      # connections.jsonl rotates at this size, keeping this many old files.
+      - FETCHER_LOG_MAX_MB=${FETCHER_LOG_MAX_MB:-10}
+      - FETCHER_LOG_BACKUPS=${FETCHER_LOG_BACKUPS:-9}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    volumes:
+      # allowlist.json + connections.jsonl (the full connection log)
+      - ${DATA_DIR:-./data}/egress:/state
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      # entrypoint: chown /state, then su-exec down to $PUID:$PGID
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    # Built from the repo root so the web UI is baked into the image.
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: fetcher-api
+    container_name: fetcher-api
+    restart: unless-stopped
+    depends_on:
+      - aria2
+      - egress
+    networks:
+      - frontnet
+      - aria2rpc
+      - ctlnet
+    environment:
+      - ARIA2_RPC_URL=http://aria2:6800/jsonrpc
+      - ARIA2_RPC_SECRET=${ARIA2_RPC_SECRET}
+      # Required: the API refuses to start without it.
+      - FETCHER_API_TOKEN=${FETCHER_API_TOKEN}
+      - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-5}
+      # Same user as aria2, so it can serve and delete what aria2 wrote.
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    volumes:
+      # Job history (fetcher.db)
+      - ${DATA_DIR:-./data}/api:/state
+      # Same path as in aria2. The API only ever touches files recorded in
+      # its history as downloaded by Fetcher (see api/app/files.py).
+      - ${DOWNLOAD_DIR:-./downloads}:/downloads
+    ports:
+      # Set FETCHER_BIND to the machine's LAN IP to avoid listening on every
+      # interface (e.g. a VPN or WAN-facing one).
+      - ${FETCHER_BIND:-0.0.0.0}:${FETCHER_PORT:-5142}:5142
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      # entrypoint: chown /state, then setpriv down to $PUID:$PGID
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
