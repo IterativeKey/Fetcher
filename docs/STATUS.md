@@ -2,8 +2,7 @@
 
 ## Where things stand
 
-Nothing is committed yet: every file in the repo is untracked. The first
-commit should be the current state.
+Initial commit aa07351, pushed to GitHub on 2026-11-04.
 
 History: a 2026-10-23 review found the original code broken and unsafe; that
 was fixed and an egress gateway added (2026-10-24). On 2026-11-04 the project
@@ -48,14 +47,14 @@ builder:
   permissions on a real share, `PUID`/`PGID` defaults, ARM models.
 - The QPKG: `qbuild` with `packaging/qnap/qpkg.cfg`, the service script on
   QTS, and whether the QTS `/fetcher` proxy passes WebSockets.
-- CI has not run yet (needs the first push). It now also validates the
+- The first CI run (triggered by the push) has not been checked. It also validates the
   compose file with docker-compose v1.29.2 and `setup.sh` with `dash`.
 - Desktop notifications (need HTTPS or localhost; on plain-http LAN the UI
   falls back to an in-page message).
 
 ## Open items
 
-- [ ] Commit the current state.
+- [x] Commit the current state (aa07351).
 - [ ] Test on the NAS: `./setup.sh`, add/serve/delete, restart the NAS.
 - [ ] Pin base image digests (`alpine:3.20` x2, `python:3.12-slim`).
 - [x] Pin `aquasecurity/trivy-action` (v0.36.0) and `actions/checkout` (v7.0.1) to commit SHAs.
