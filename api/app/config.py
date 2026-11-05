@@ -2,7 +2,7 @@ import os
 
 # Fetcher's version. BUILD is when the api image was built (written by
 # api/Dockerfile), so the UI shows whether the latest code is running.
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 try:
     with open(os.path.join(os.path.dirname(__file__), "..", "BUILD")) as f:
         BUILD = f.read().strip()

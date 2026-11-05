@@ -294,6 +294,11 @@ function renderLive() {
     const j = jobs.get(Number(id));
     if (el && j) fillRow(el, eff(j));
   }
+  // Countdowns to automatic retries.
+  for (const [id, el] of rows) {
+    const j = jobs.get(id);
+    if (j && j.status === "error" && j.retry_at) fillRow(el, j);
+  }
 }
 
 function statsLine(j) {
@@ -312,8 +317,17 @@ function statsLine(j) {
         .filter(Boolean).join(" · ");
     }
     default:
-      return [size, j.speed_limit ? `limit ${fmtSize(j.speed_limit)}/s` : ""].filter(Boolean).join(" · ");
+      return [size, j.speed_limit ? `limit ${fmtSize(j.speed_limit)}/s` : "", retryText(j)].filter(Boolean).join(" · ");
   }
+}
+
+function retryText(j) {
+  if (j.status !== "error") return "";
+  if (j.retry_at) {
+    const left = j.retry_at - Date.now() / 1000;
+    return left > 1 ? `auto-retry ${j.retries + 1} in ${fmtDur(left)}` : `auto-retry ${j.retries + 1} starting…`;
+  }
+  return j.retries ? `gave up after ${j.retries} automatic retr${j.retries === 1 ? "y" : "ies"}` : "";
 }
 
 function iconBtn(name, title, onclick, cls = "") {
@@ -549,7 +563,8 @@ function openMenu(anchor, id) {
     items.push(it("Move to top of queue", "up", () => act(id, "top")));
     items.push(it("Move to bottom of queue", "down", () => act(id, "bottom")));
   }
-  if (st === "error" || st === "stopped") items.push(it("Retry", "retry", () => act(id, "retry")));
+  if (st === "error" || st === "stopped") items.push(it(j.retry_at ? "Retry now" : "Retry", "retry", () => act(id, "retry")));
+  if (st === "error" && j.retry_at) items.push(it("Cancel automatic retry", "stop", () => act(id, "stop")));
   if (st === "active" || st === "waiting" || st === "paused") items.push(it("Stop (keep in list)", "stop", () => act(id, "stop")));
   if (st !== "complete") items.push(it("Speed limit…", "speed", () => jobSpeed(j)));
   if (st === "complete" && !j.file_deleted) {

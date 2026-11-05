@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     file_size    INTEGER,
     file_mtime   INTEGER,          -- ns; with dev/ino/size proves it's still our file
     file_deleted INTEGER NOT NULL DEFAULT 0,
-    sha256       TEXT NOT NULL DEFAULT ''
+    sha256       TEXT NOT NULL DEFAULT '',
+    retries      INTEGER NOT NULL DEFAULT 0,  -- automatic retries since the last manual start
+    retry_at     REAL              -- when the next automatic retry is due (NULL = none)
 );
 CREATE INDEX IF NOT EXISTS jobs_gid ON jobs(gid);
 CREATE TABLE IF NOT EXISTS settings (
@@ -47,7 +49,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 COLUMNS = ["id", "gid", "url", "category", "status", "name", "path", "total",
            "done", "error", "added_at", "finished_at", "favorite", "hidden",
-           "speed_limit", "file_deleted", "sha256"]
+           "speed_limit", "file_deleted", "sha256", "retries", "retry_at"]
 
 
 class DB:
@@ -62,7 +64,9 @@ class DB:
             self._conn.executescript(SCHEMA)
             # Columns added after the first release.
             have = {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}
-            for col, decl in [("file_mtime", "INTEGER")]:
+            for col, decl in [("file_mtime", "INTEGER"),
+                              ("retries", "INTEGER NOT NULL DEFAULT 0"),
+                              ("retry_at", "REAL")]:
                 if col not in have:
                     self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
         # Bumped on every write; the UI gets a full list only when it changes.
@@ -94,6 +98,11 @@ class DB:
     def all(self) -> list[dict]:
         cols = ", ".join(COLUMNS)
         rows = self._exec(f"SELECT {cols} FROM jobs ORDER BY id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def due_retries(self, now: float) -> list[dict]:
+        rows = self._exec("SELECT * FROM jobs WHERE status='error' AND retry_at IS NOT NULL "
+                          "AND retry_at <= ?", (now,)).fetchall()
         return [dict(r) for r in rows]
 
     def update(self, job_id: int, **fields) -> None:

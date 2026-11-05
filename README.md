@@ -14,6 +14,11 @@ UI). It runs anywhere Docker does. On QNAP it can also be wrapped in a
 - **Downloads:** multi-connection, resumable across restarts; paste or drop
   many links at once; save into folders; add paused; queue order (top/bottom);
   per-download and overall speed limits; how many run at once.
+- **Automatic retry:** a download that fails for a temporary reason (503/429,
+  a dropped TLS connection, a timeout, "No URI available.") is resumed
+  automatically after 30 s, 1 min, 2 min ... up to 1 h, 8 times, with fewer
+  connections each time (8, 4, 2, 1) for servers that throttle. 404s, auth
+  and disk errors are not retried. Cancel or retry now from the row menu.
 - **History:** every download stays in the list after it finishes (and after
   restarts) until you remove it. Favorite, hide/show hidden, search, filter
   by status or folder, sort, select many for bulk actions.
@@ -184,7 +189,7 @@ scan) should pass before deploying.
 
 ## Status
 
-Early (0.4.0). Tested end to end in Docker with both `docker compose` v2 and
+Early (0.5.0). Tested end to end in Docker with both `docker compose` v2 and
 `docker-compose` v1.29.2 (the legacy builder). Not yet run on a real NAS;
 see `docs/STATUS.md` for what's verified and what's open. Reports welcome.
 
