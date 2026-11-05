@@ -25,12 +25,10 @@ class Aria2Client:
         return head + (extra or [])
 
     async def call(self, method: str, extra: list | None = None):
-        body = {
-            "jsonrpc": "2.0",
-            "id": "fetcher",
-            "method": method,
-            "params": self._params(extra),
-        }
+        return await self._post(method, self._params(extra))
+
+    async def _post(self, method: str, params: list):
+        body = {"jsonrpc": "2.0", "id": "fetcher", "method": method, "params": params}
         resp = await self._http.post(config.ARIA2_RPC_URL, json=body)
         # aria2 reports RPC errors as HTTP 400 with a JSON-RPC error body;
         # read that before falling back to the HTTP status.
@@ -57,9 +55,26 @@ class Aria2Client:
         return await self.call("aria2.addUri", [[url], options])
 
     async def list(self) -> dict:
-        active = await self.call("aria2.tellActive", [JOB_KEYS])
-        waiting = await self.call("aria2.tellWaiting", [0, 1000, JOB_KEYS])
-        stopped = await self.call("aria2.tellStopped", [0, 1000, JOB_KEYS])
+        """All jobs in ONE request, so aria2 answers from a single moment.
+        (Three separate calls could miss a job that moved from waiting to
+        active in between, and the API would then think aria2 lost it.)"""
+        calls = [{"methodName": m, "params": self._params(p)} for m, p in (
+            ("aria2.tellActive", [JOB_KEYS]),
+            ("aria2.tellWaiting", [0, 1000, JOB_KEYS]),
+            ("aria2.tellStopped", [0, 1000, JOB_KEYS]))]
+        try:
+            results = await self._post("system.multicall", [calls])
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError):
+            # A pooled keep-alive connection aria2 already closed: a read-only
+            # call, so one retry on a fresh connection is safe. (Not on a
+            # timeout: that would only double the wait.)
+            results = await self._post("system.multicall", [calls])
+        out = []
+        for r in results:
+            if isinstance(r, dict):  # per-call fault: {"code", "message"}
+                raise Aria2Error(r.get("message", "system.multicall"))
+            out.append(r[0])
+        active, waiting, stopped = out
         return {"active": active, "waiting": waiting, "stopped": stopped}
 
     async def status(self, gid: str) -> str:

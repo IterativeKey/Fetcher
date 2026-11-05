@@ -162,12 +162,15 @@ const STATUS_LABEL = { active: "Downloading", waiting: "Queued", paused: "Paused
 
 let jobs = new Map();       // id -> job (history row)
 let live = {};              // id -> {status, speed, connections, done, total}
+let connected = true;       // false while the live connection to Fetcher is down
+let lastMessage = 0;        // when the server last sent something (about every second)
 let categories = [];
 let settings = { speed_limit: 0, max_concurrent: 5 };
 let stats = {};
 const selected = new Set();
 const expanded = new Set();
 const rows = new Map();     // id -> row element
+const hashing = new Set();  // ids whose SHA-256 is being computed
 let lastStatus = new Map(); // id -> status, for "finished" notifications
 let firstSnapshot = true;
 
@@ -216,7 +219,8 @@ function visibleJobs() {
 function renderHeader() {
   const s = stats || {};
   const parts = [];
-  if (s.engine === false) parts.push(h("span", { class: "engine-down", text: "Download engine unreachable" }));
+  if (!connected) parts.push(h("span", { class: "engine-down", text: "Reconnecting…" }));
+  else if (s.engine === false) parts.push(h("span", { class: "engine-down", text: "Download engine unreachable" }));
   parts.push(h("span", {}, h("b", { text: `${fmtSize(s.speed || 0)}/s` }), ` · ${s.active || 0} active`));
   if (settings.speed_limit) parts.push(h("span", { class: "hide-sm", text: `limit ${fmtSize(settings.speed_limit)}/s` }));
   if (s.disk && s.disk.total) {
@@ -332,7 +336,7 @@ function primaryActions(j) {
 function fillRow(el, j) {
   // Rebuild cheaply but keep focus/menus stable by key: rows are small.
   const key = [j.status, j.name, j.favorite, j.hidden, j.file_deleted, j.category, j.error, j.sha256,
-               j.speed_limit, selected.has(j.id), expanded.has(j.id), j.path, j.total].join("|");
+               j.speed_limit, selected.has(j.id), expanded.has(j.id), hashing.has(j.id), j.path, j.total].join("|");
   el.dataset.status = j.status;
   el.classList.toggle("sel", selected.has(j.id));
   el.classList.toggle("hidden-job", !!j.hidden);
@@ -383,6 +387,7 @@ function details(j) {
   if (j.status === "complete" && !j.file_deleted)
     add("SHA-256", j.sha256 ? h("code", { text: j.sha256 }) : null,
       j.sha256 ? h("button", { class: "linkbtn", type: "button", text: "copy", onclick: () => copy(j.sha256) })
+               : hashing.has(j.id) ? h("span", { text: "computing…" })
                : h("button", { class: "linkbtn", type: "button", text: "compute", onclick: () => checksum(j) }));
   if (j.error) add("Last error", errorText(j.error));
   add("ID", `#${j.id}${j.gid ? ` · engine gid ${j.gid}` : ""}`);
@@ -419,8 +424,10 @@ function renderBulk() {
 // ---- actions ------------------------------------------------------------------------------
 
 async function act(id, action) {
-  try { await api(`api/downloads/${id}/${action}`, { method: "POST" }); }
-  catch (e) { toast(e.message, "bad"); }
+  try {
+    const r = await api(`api/downloads/${id}/${action}`, { method: "POST" });
+    if (r.note) toast(r.note, "warn");
+  } catch (e) { toast(e.message, "bad"); }
 }
 
 async function bulk(action, ids = [...selected]) {
@@ -429,6 +436,9 @@ async function bulk(action, ids = [...selected]) {
     if (r.errors.length) {
       toast(`${r.errors.length} of ${ids.length} failed: ` +
         r.errors.slice(0, 3).map(e => `${e.name}: ${e.error}`).join("; ") + (r.errors.length > 3 ? " …" : ""), "bad");
+    }
+    if (r.notes && r.notes.length) {
+      toast(r.notes.slice(0, 3).join("; ") + (r.notes.length > 3 ? ` …and ${r.notes.length - 3} more` : ""), "warn");
     }
     return r;
   } catch (e) { toast(e.message, "bad"); }
@@ -448,7 +458,10 @@ async function confirmRemove(ids, withFiles) {
   });
   if (!r) return;
   const res = await bulk(withFiles ? "remove-and-delete" : "remove", list.map(j => j.id));
-  if (res && res.ok) { ids.forEach(id => selected.delete(id)); toast(withFiles ? "Deleted." : "Removed from the list.", "ok"); }
+  if (res && res.ok) {
+    ids.forEach(id => selected.delete(id));
+    if (!(res.notes && res.notes.length)) toast(withFiles ? "Deleted." : "Removed from the list.", "ok");
+  }
   render();
 }
 
@@ -492,10 +505,20 @@ async function jobSpeed(j) {
   catch (e) { toast(e.message, "bad"); }
 }
 
+// Reads the whole file on the NAS: big files take minutes, so show that it's
+// running (in the details row) and say when it's done.
 async function checksum(j) {
-  toast(`Computing SHA-256 of ${displayName(j)}…`);
-  try { await api(`api/downloads/${j.id}/checksum`, { method: "POST" }); expanded.add(j.id); }
-  catch (e) { toast(e.message, "bad"); }
+  if (hashing.has(j.id)) return;
+  const name = displayName(j);
+  hashing.add(j.id); expanded.add(j.id); render();
+  toast(`Computing SHA-256 of ${name}… (large files can take a few minutes)`);
+  try {
+    const r = await api(`api/downloads/${j.id}/checksum`, { method: "POST" });
+    const row = jobs.get(j.id);
+    if (row) row.sha256 = r.sha256;
+    toast(`SHA-256 ready: ${name}`);
+  } catch (e) { toast(`SHA-256 of ${name} failed: ${e.message}`, "bad"); }
+  finally { hashing.delete(j.id); render(); }
 }
 
 async function copy(text) {
@@ -533,7 +556,8 @@ function openMenu(anchor, id) {
     items.push(it("Save to this device", "download", () => toBrowser(id, false)));
     if (VIEWABLE.test(j.name || "")) items.push(it("Open in a new tab", "eye", () => toBrowser(id, true)));
     items.push(it("Rename…", "edit", () => renameJob(j)));
-    items.push(it(j.sha256 ? "Show SHA-256" : "Compute SHA-256", "hash", () => j.sha256 ? (expanded.add(id), render()) : checksum(j)));
+    if (!hashing.has(id))
+      items.push(it(j.sha256 ? "Show SHA-256" : "Compute SHA-256", "hash", () => j.sha256 ? (expanded.add(id), render()) : checksum(j)));
   }
   if (st === "complete") items.push(it("Download again", "retry", () => act(id, "retry")));
   items.push(h("hr"));
@@ -613,14 +637,18 @@ function dialog(opts) {
 function toast(msg, kind = "") {
   const t = h("div", { class: `toast ${kind}`, text: msg, role: kind === "bad" ? "alert" : "status" });
   $("#toasts").append(t);
-  setTimeout(() => t.remove(), kind === "bad" ? 9000 : 3500);
+  setTimeout(() => t.remove(), kind === "bad" || kind === "warn" ? 9000 : 3500);
 }
 
 // ---- settings ---------------------------------------------------------------------------------
 
 async function openSettings() {
-  let version = "";
-  try { version = (await api("api/health")).aria2_version; } catch {}
+  let version = "", app = "";
+  try {
+    const hl = await api("api/health");
+    version = hl.aria2_version;
+    app = `Fetcher ${hl.version}, built ${hl.build}. `;
+  } catch {}
   const r = await dialog({
     title: "Settings",
     fields: [
@@ -632,7 +660,7 @@ async function openSettings() {
       { name: "notify", label: "Notify me when a download finishes (this browser)", type: "checkbox", value: prefs.notify },
     ],
     extra: [
-      h("p", { style: "font-size:12px", text: `Download engine: aria2 ${version || "unreachable"}. Desktop notifications need HTTPS or localhost; otherwise a message appears in the page.` }),
+      h("p", { style: "font-size:12px", text: `${app}Download engine: aria2 ${version || "unreachable"}. Desktop notifications need HTTPS or localhost; otherwise a message appears in the page.` }),
       h("button", { class: "btn", type: "button", text: "Sign out of this browser",
                     onclick: () => { setToken(""); $("#dlg").close(); location.reload(); } }),
     ],
@@ -696,6 +724,11 @@ function onFull(d) {
   live = d.live || {};
   stats = d.stats || {};
   settings = d.settings || settings;
+  if (d.app) {
+    const v = $("#ver");
+    v.textContent = `v${d.app.version}`;
+    v.title = `Fetcher ${d.app.version}, built ${d.app.build}`;
+  }
   const catsChanged = JSON.stringify(categories) !== JSON.stringify(d.categories || []);
   categories = d.categories || [];
   if (catsChanged) renderCategories();
@@ -710,8 +743,10 @@ function connect() {
   const sock = new WebSocket(url);
   ws = sock;
   // The token goes in the first message, never in the URL (URLs get logged).
-  sock.onopen = () => sock.send("token:" + storedToken());
+  sock.onopen = () => { lastMessage = Date.now(); sock.send("token:" + storedToken()); };
   sock.onmessage = (m) => {
+    lastMessage = Date.now();
+    if (!connected) { connected = true; renderHeader(); }
     const d = JSON.parse(m.data);
     if (d.type === "full") onFull(d);
     else if (d.type === "live") { live = d.live || {}; stats = d.stats || stats; renderLive(); }
@@ -719,7 +754,7 @@ function connect() {
   sock.onclose = (e) => {
     if (ws !== sock) return;
     if (e.code === 4401) { ws = null; login("That token was not accepted. Try again."); return; }
-    stats = { ...stats, engine: false };
+    connected = false;
     renderHeader();
     setTimeout(connect, 2000);
   };
@@ -727,6 +762,11 @@ function connect() {
 function reconnect() { const old = ws; ws = null; if (old) old.close(); connect(); }
 
 setInterval(() => { if (ws && ws.readyState === WebSocket.OPEN) ws.send("ping"); }, 20000);
+// A connection can die without closing (Wi-Fi switch, sleeping laptop, a
+// proxy dropping it): if nothing arrived for a while, start a fresh one.
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMessage > 15000) reconnect();
+}, 5000);
 
 // ---- add form -----------------------------------------------------------------------------------
 

@@ -50,11 +50,17 @@ Prefer doing it by hand? `cp .env.example .env`, fill in the two secrets
 
 1. In QTS, install **Container Station** and create a **Shared Folder** for
    downloads (e.g. `Fetcher`).
-2. Enable SSH and copy this repo **outside** that share, e.g.
-   `/share/CACHEDEV1_DATA/FetcherApp`.
-3. `cd` there and run `./setup.sh`. It suggests
-   `/share/CACHEDEV1_DATA/Fetcher` and the group `everyone` (100).
-4. Optional: the QPKG wrapper for a Main Menu icon - see
+2. Enable SSH and find the volume your share is on:
+   `readlink -f /share/Fetcher` (e.g. `/share/CACHEDEV1_DATA/Fetcher`, or
+   `/share/CE_CACHEDEV1_DATA/Fetcher` on some models). Use that real path
+   everywhere: `/share` itself is a 16 MiB RAM disk, so a path that doesn't
+   exist gets created there and is wiped on reboot.
+3. Copy this repo **outside** the share, on the same volume, e.g.
+   `/share/CE_CACHEDEV1_DATA/FetcherApp`.
+4. `cd` there and run `./setup.sh`. It suggests the share on the first
+   storage volume and the group `everyone` (100), stores real paths, and
+   refuses folders on a RAM disk.
+5. Optional: the QPKG wrapper for a Main Menu icon - see
    `packaging/qnap/build.sh`. It needs [QDK](https://github.com/qnap-dev/QDK)
    on the NAS; install the `.qpkg` via **App Center -> Install from file**
    (an unsigned-package warning is expected), run
@@ -178,7 +184,7 @@ scan) should pass before deploying.
 
 ## Status
 
-Early (0.3.0). Tested end to end in Docker with both `docker compose` v2 and
+Early (0.4.0). Tested end to end in Docker with both `docker compose` v2 and
 `docker-compose` v1.29.2 (the legacy builder). Not yet run on a real NAS;
 see `docs/STATUS.md` for what's verified and what's open. Reports welcome.
 
