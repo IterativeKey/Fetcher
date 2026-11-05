@@ -11,6 +11,9 @@ COPY api/app ./app
 COPY web ./web
 COPY api/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
+# Build time, shown in the UI. Docker re-runs this step only when a file
+# copied above changed, so it marks when the running code was last rebuilt.
+RUN date -u +"%Y-%m-%d %H:%M UTC" > /app/BUILD
 
 # Starts as root only to take ownership of /state, then drops to
 # $PUID:$PGID - the same user aria2 writes downloads as, so the API can

@@ -5,35 +5,35 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <title>Fetcher</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%233f7bd9' d='M11 3h2v10l4-4 1.4 1.4L12 16.8 5.6 10.4 7 9l4 4zM5 19h14v2H5z'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%234f6f2f' d='M11 3h2v10l4-4 1.4 1.4L12 16.8 5.6 10.4 7 9l4 4zM5 19h14v2H5z'/%3E%3C/svg%3E">
   <style>
     :root {
-      --bg: #f5f6f8; --panel: #ffffff; --panel2: #f0f2f5; --line: #dfe3e8; --text: #1c2128;
-      --muted: #5f6b78; --faint: #8a95a1; --accent: #2f6fd1; --accent-ink: #fff;
-      --ok: #2f8f4e; --warn: #a77a00; --bad: #c0392b; --star: #d99a00;
-      --chip-active: #dce9fb; --chip-active-ink: #1f5bb3; --chip-wait: #fbf1d3; --chip-wait-ink: #7a5a00;
+      --bg: #f4f6f1; --panel: #ffffff; --panel2: #edf0e8; --line: #dce2d4; --text: #1d2219;
+      --muted: #5d6857; --faint: #8a9483; --accent: #4f6f2f; --accent-ink: #fff;
+      --ok: #23805a; --warn: #a77a00; --bad: #c0392b; --star: #d99a00;
+      --chip-active: #e2ebd4; --chip-active-ink: #3d5a22; --chip-wait: #fbf1d3; --chip-wait-ink: #7a5a00;
       --chip-ok: #dcf2e3; --chip-ok-ink: #22703c; --chip-bad: #fbe0dc; --chip-bad-ink: #a2301f;
-      --chip: #e8ebef; --chip-ink: #4a5561; --shadow: 0 6px 24px rgba(20, 30, 45, .14);
+      --chip: #e6eae0; --chip-ink: #4b5544; --shadow: 0 6px 24px rgba(20, 30, 45, .14);
       color-scheme: light;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme="light"]) {
-        --bg: #121418; --panel: #191c21; --panel2: #1f2329; --line: #2a2f36; --text: #e4e7ea;
-        --muted: #9aa3ad; --faint: #6b747e; --accent: #4d8ae4; --accent-ink: #fff;
-        --ok: #5cc27c; --warn: #e0c86a; --bad: #ef8a80; --star: #f2c14e;
-        --chip-active: #1e3a5f; --chip-active-ink: #8cbcf7; --chip-wait: #3d3a1e; --chip-wait-ink: #e0c86a;
+        --bg: #121510; --panel: #191d16; --panel2: #20251c; --line: #2c3326; --text: #e5e9e1;
+        --muted: #9ea896; --faint: #6d7766; --accent: #93b360; --accent-ink: #141a0e;
+        --ok: #4fc493; --warn: #e0c86a; --bad: #ef8a80; --star: #f2c14e;
+        --chip-active: #2b3b1d; --chip-active-ink: #b8d48c; --chip-wait: #3d3a1e; --chip-wait-ink: #e0c86a;
         --chip-ok: #1c3b26; --chip-ok-ink: #7fdc9c; --chip-bad: #4a2424; --chip-bad-ink: #f3a39b;
-        --chip: #2a2f36; --chip-ink: #b9c0c8; --shadow: 0 8px 28px rgba(0, 0, 0, .5);
+        --chip: #2c3326; --chip-ink: #bcc4b5; --shadow: 0 8px 28px rgba(0, 0, 0, .5);
         color-scheme: dark;
       }
     }
     :root[data-theme="dark"] {
-      --bg: #121418; --panel: #191c21; --panel2: #1f2329; --line: #2a2f36; --text: #e4e7ea;
-      --muted: #9aa3ad; --faint: #6b747e; --accent: #4d8ae4; --accent-ink: #fff;
-      --ok: #5cc27c; --warn: #e0c86a; --bad: #ef8a80; --star: #f2c14e;
-      --chip-active: #1e3a5f; --chip-active-ink: #8cbcf7; --chip-wait: #3d3a1e; --chip-wait-ink: #e0c86a;
+      --bg: #121510; --panel: #191d16; --panel2: #20251c; --line: #2c3326; --text: #e5e9e1;
+      --muted: #9ea896; --faint: #6d7766; --accent: #93b360; --accent-ink: #141a0e;
+      --ok: #4fc493; --warn: #e0c86a; --bad: #ef8a80; --star: #f2c14e;
+      --chip-active: #2b3b1d; --chip-active-ink: #b8d48c; --chip-wait: #3d3a1e; --chip-wait-ink: #e0c86a;
       --chip-ok: #1c3b26; --chip-ok-ink: #7fdc9c; --chip-bad: #4a2424; --chip-bad-ink: #f3a39b;
-      --chip: #2a2f36; --chip-ink: #b9c0c8; --shadow: 0 8px 28px rgba(0, 0, 0, .5);
+      --chip: #2c3326; --chip-ink: #bcc4b5; --shadow: 0 8px 28px rgba(0, 0, 0, .5);
       color-scheme: dark;
     }
 
@@ -54,6 +54,7 @@
     .hstats b { color: var(--text); font-weight: 600; }
     .disk { display: flex; align-items: center; gap: 6px; }
     .disk .bar { width: 80px; height: 6px; }
+    h1 .ver { font-size: 11.5px; font-weight: 400; color: var(--muted); margin-left: 2px; }
     .engine-down { color: var(--bad); font-weight: 600; }
     .spacer { flex: 1; }
     .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel);
@@ -152,6 +153,7 @@
              white-space: pre-line; }
     .toast.bad { border-left-color: var(--bad); }
     .toast.ok { border-left-color: var(--ok); }
+    .toast.warn { border-left-color: var(--warn); }
 
     #empty { color: var(--faint); text-align: center; padding: 40px 0; }
 
@@ -183,7 +185,7 @@
 <body>
   <div class="wrap">
     <header>
-      <h1><svg viewBox="0 0 24 24"><path d="M11 3h2v10l4-4 1.4 1.4L12 16.8 5.6 10.4 7 9l4 4zM5 19h14v2H5z"/></svg>Fetcher</h1>
+      <h1><svg viewBox="0 0 24 24"><path d="M11 3h2v10l4-4 1.4 1.4L12 16.8 5.6 10.4 7 9l4 4zM5 19h14v2H5z"/></svg>Fetcher<span class="ver" id="ver"></span></h1>
       <div class="hstats" id="hstats"></div>
       <div class="spacer"></div>
       <button class="btn ghost" id="pauseAll" title="Pause all"></button>

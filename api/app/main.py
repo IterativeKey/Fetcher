@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Fetcher",
-    version="0.3.0",
+    version=config.VERSION,
     lifespan=lifespan,
     # No /docs, /redoc or /openapi.json: they're unauthenticated and the docs
     # pages load Swagger/ReDoc from third-party CDNs.
@@ -167,7 +167,8 @@ async def start(url: str, category: str, paused: bool) -> int:
     return db.add(url, category, gid, "paused" if paused else "waiting")
 
 
-async def act(job: dict, action: str) -> None:
+async def act(job: dict, action: str) -> str:
+    """Returns a note for the user when the action only partly applied."""
     gid = job["gid"]
     try:
         if action == "pause":
@@ -196,13 +197,14 @@ async def act(job: dict, action: str) -> None:
         elif action == "delete-file":
             await delete_file(job)
         elif action == "remove":
-            await remove(job, with_file=False)
+            return await remove(job, with_file=False)
         elif action == "remove-and-delete":
-            await remove(job, with_file=True)
+            return await remove(job, with_file=True)
         else:
             raise HTTPException(400, f"unknown action: {action}")
     except Aria2Error as exc:
         raise HTTPException(409, str(exc))
+    return ""
 
 
 async def retry(job: dict) -> None:
@@ -257,12 +259,22 @@ async def delete_file(job: dict) -> None:
     db.update(job["id"], file_deleted=1)
 
 
-async def remove(job: dict, with_file: bool) -> None:
+async def remove(job: dict, with_file: bool) -> str:
+    note = ""
     if with_file and not job["file_deleted"]:
-        await delete_file(job)
+        try:
+            await delete_file(job)
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            # Fetcher won't delete a file it can't prove is its own, but that
+            # must never trap the entry in the list: remove it, keep the file.
+            name = job["name"] or os.path.basename(job["path"] or "") or "the file"
+            note = f"{name}: removed from the list, file left on disk ({exc.detail})"
     elif job["gid"]:
         await client.stop(job["gid"])
     db.delete(job["id"])
+    return note
 
 
 # --- REST ----------------------------------------------------------------------
@@ -302,7 +314,8 @@ class Settings(BaseModel):
 async def health(request: Request):
     auth(request)
     try:
-        return {"ok": True, "aria2_version": await client.version()}
+        return {"ok": True, "version": config.VERSION, "build": config.BUILD,
+                "aria2_version": await client.version()}
     except Exception as exc:
         raise HTTPException(503, f"aria2 unreachable: {exc}")
 
@@ -420,30 +433,32 @@ async def serve_file(job_id: int, exp: int, sig: str, inline: int = 0):
 @app.post("/api/downloads/{job_id}/{action}")
 async def job_action(job_id: int, action: Action, request: Request):
     auth(request)
-    await act(job_or_404(job_id), action)
-    return {"ok": True}
+    note = await act(job_or_404(job_id), action)
+    return {"ok": True, "note": note}
 
 
 @app.delete("/api/downloads/{job_id}")
 async def delete_download(job_id: int, request: Request, delete_file: bool = False):
     auth(request)
-    await act(job_or_404(job_id), "remove-and-delete" if delete_file else "remove")
-    return {"ok": True}
+    note = await act(job_or_404(job_id), "remove-and-delete" if delete_file else "remove")
+    return {"ok": True, "note": note}
 
 
 @app.post("/api/bulk")
 async def bulk(body: Bulk, request: Request):
     auth(request)
-    errors = []
+    errors, notes = [], []
     for job_id in body.ids:
         job = db.get(job_id)
         if not job:
             continue
         try:
-            await act(job, body.action)
+            note = await act(job, body.action)
+            if note:
+                notes.append(note)
         except HTTPException as exc:
             errors.append({"id": job_id, "name": job["name"] or job["url"], "error": exc.detail})
-    return {"ok": not errors, "errors": errors}
+    return {"ok": not errors, "errors": errors, "notes": notes}
 
 
 @app.post("/api/global/{action}")
@@ -491,6 +506,10 @@ async def connections(request: Request, limit: int = 500):
 
 live: dict[int, dict] = {}       # job id -> {speed, connections, done, total}
 engine_ok = False
+# aria2 can stall for a moment (e.g. a slow disk write); report it as down
+# only after this many failed polls in a row (~1 s apart).
+ENGINE_DOWN_AFTER = 3
+engine_fails = 0
 
 
 async def apply_settings(force: bool = False) -> None:
@@ -519,15 +538,17 @@ def _name(j: dict) -> tuple[str, str, str]:
 async def sync() -> None:
     """Fold aria2's view into the history. Rows are read BEFORE asking aria2,
     so a job added in between is never mistaken for one aria2 lost."""
-    global live, engine_ok
+    global live, engine_ok, engine_fails
     rows = db.by_gid()
     try:
         snap = await client.list()
-        engine_ok = True
     except (Aria2Error, httpx.HTTPError):
-        engine_ok = False
-        live = {}
+        engine_fails += 1
+        if engine_fails >= ENGINE_DOWN_AFTER:
+            engine_ok = False
+            live = {}
         return
+    engine_fails, engine_ok = 0, True
     seen, new_live = set(), {}
     for j in snap["active"] + snap["waiting"] + snap["stopped"]:
         gid = j["gid"]
@@ -556,9 +577,15 @@ async def sync() -> None:
         if (j.get("errorMessage") or "") != row["error"]:
             fields["error"] = j.get("errorMessage") or ""
         p = path or row["path"]
-        if p and row["file_ino"] is None:
+        # While aria2 is downloading (or has just finished or failed) the file
+        # at its path is aria2's own, and aria2 may recreate it - e.g. when a
+        # server can't resume and it starts over. Track that, so the history
+        # doesn't later mistake our own file for a replaced one. Waiting and
+        # paused jobs keep the first identity seen (their path may not be
+        # final yet).
+        if p and (row["file_ino"] is None or j["status"] in ("active", "complete", "error")):
             ident = files.identity(p)
-            if ident:
+            if ident and (ident[0], ident[1]) != (row["file_dev"], row["file_ino"]):
                 fields.update(file_dev=ident[0], file_ino=ident[1])
         if j["status"] in FINISHED:
             if status == "complete":
@@ -589,7 +616,8 @@ def stats() -> dict:
 
 
 def full_snapshot() -> dict:
-    return {"type": "full", "version": db.version, "jobs": db.all(), "live": live,
+    return {"type": "full", "version": db.version, "app": {"version": config.VERSION, "build": config.BUILD},
+            "jobs": db.all(), "live": live,
             "categories": db.categories(), "settings": current_settings(), "stats": stats()}
 
 
@@ -608,9 +636,15 @@ async def _pulse(app: FastAPI):
                     msg = {"type": "live", "live": live, "stats": stats()}
                 for ws in list(app.state.sockets):
                     try:
-                        await ws.send_json(msg)
+                        # A stalled browser (sleeping phone, dead Wi-Fi) must
+                        # not hold up the loop for everyone else.
+                        await asyncio.wait_for(ws.send_json(msg), 5)
                     except Exception:
                         app.state.sockets.discard(ws)
+                        try:
+                            await asyncio.wait_for(ws.close(), 1)
+                        except Exception:
+                            pass
         except Exception as exc:  # never let the loop die
             print(f"sync error: {exc!r}", flush=True)
         tick += 1
