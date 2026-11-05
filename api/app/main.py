@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import mimetypes
 import os
+import random
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -51,6 +52,20 @@ INLINE_PREFIXES = ("image/", "video/", "audio/", "text/plain")
 INLINE_REFUSED = {"image/svg+xml"}
 
 ACTIVE = {"active", "waiting", "paused"}
+
+# Automatic retry. aria2 already retries within one attempt (max-tries,
+# retry-wait); when it gives up anyway, the API starts the job again after a
+# growing delay, resuming the partial file, with fewer connections each time:
+# servers that throttle answer too many parallel connections with 503/429 or
+# by cutting the TLS connection.
+# aria2 exit codes worth retrying - the server or the network failed, not the
+# request: 1 unknown (includes "No URI available."), 2 timeout, 5 too slow,
+# 6 network problem, 19 name resolution, 22 unexpected HTTP response (5xx,
+# 429, a refused proxy tunnel), 29 server overloaded (503). Not retried: 404,
+# auth failures, disk errors, checksum mismatches.
+RETRYABLE_CODES = {"1", "2", "5", "6", "19", "22", "29"}
+RETRY_DELAYS = [30, 60, 120, 300, 600, 1200, 1800, 3600]  # before retry 1, 2, ...
+CONNECTIONS = int(os.getenv("MAX_CONNECTION_PER_SERVER", "8"))
 
 client = Aria2Client()
 egress = httpx.AsyncClient(base_url=config.EGRESS_URL, timeout=120)
@@ -184,8 +199,13 @@ async def act(job: dict, action: str) -> str:
             if job["status"] in ACTIVE and gid:
                 await client.stop(gid)
                 db.update(job["id"], status="stopped", gid=None, **progress(job))
+            elif job["status"] == "error" and job["retry_at"]:
+                db.update(job["id"], retry_at=None)  # cancel the automatic retry
         elif action == "retry":
-            await retry(job)
+            if job["id"] not in retrying:  # else an automatic retry is already starting it
+                if job["retry_at"]:
+                    db.update(job["id"], retry_at=None)  # so it can't also start meanwhile
+                await retry(job)
         elif action == "favorite":
             db.update(job["id"], favorite=1)
         elif action == "unfavorite":
@@ -207,7 +227,9 @@ async def act(job: dict, action: str) -> str:
     return ""
 
 
-async def retry(job: dict) -> None:
+async def retry(job: dict, auto: bool = False) -> None:
+    """Start a failed/stopped job again. A manual retry resets the automatic
+    retry count (and with it the full connection count)."""
     if job["status"] == "complete":
         # "Download again": a new entry; the old file and history stay.
         await start(job["url"], job["category"], False)
@@ -215,6 +237,12 @@ async def retry(job: dict) -> None:
     if job["status"] in ACTIVE:
         return
     await prepare(job["url"])
+    # prepare() can take a while: the job may have been removed, retried by
+    # hand or had its automatic retry cancelled meanwhile.
+    job = db.get(job["id"])
+    if not job or job["status"] in ACTIVE or (auto and not job["retry_at"]):
+        return
+    retries = job["retries"] if auto else 0
     out = ""
     # Resume our own partial file (aria2 picks it up via its .aria2 file);
     # only if it is still the file we were writing.
@@ -225,11 +253,17 @@ async def retry(job: dict) -> None:
         except files.FileRefused:
             out = ""
     opts = options_for(job["category"], False, job["speed_limit"], out)
+    conns = str(max(1, CONNECTIONS >> min(retries, 3)))  # 8, 4, 2, 1, 1, ...
+    opts.update({"max-connection-per-server": conns, "split": conns})
     try:
         gid = await client.add(job["url"], opts)
     except Aria2Error as exc:
         raise HTTPException(400, str(exc))
-    fields = dict(gid=gid, status="waiting", error="", finished_at=None)
+    if not db.get(job["id"]):  # removed while aria2 was adding it
+        await client.stop(gid)
+        return
+    fields = dict(gid=gid, status="waiting", error="", finished_at=None,
+                  retries=retries, retry_at=None)
     if not out:
         fields.update(path="", file_dev=None, file_ino=None, file_size=None,
                       file_mtime=None, file_deleted=0)
@@ -576,6 +610,8 @@ async def sync() -> None:
             fields["total"] = total
         if (j.get("errorMessage") or "") != row["error"]:
             fields["error"] = j.get("errorMessage") or ""
+        if status == "error" and row["status"] != "error":
+            fields.update(schedule_retry(row, j.get("errorCode")))
         p = path or row["path"]
         # While aria2 is downloading (or has just finished or failed) the file
         # at its path is aria2's own, and aria2 may recreate it - e.g. when a
@@ -605,8 +641,49 @@ async def sync() -> None:
     for gid, row in rows.items():
         if gid not in seen and row["status"] in ACTIVE:
             db.update(row["id"], gid=None, status="error",
-                      error="The download engine lost this job (restarted?). Retry resumes it.")
+                      error="The download engine lost this job (restarted?). Retry resumes it.",
+                      # A paused job stays put until the user resumes it.
+                      **({} if row["status"] == "paused" else schedule_retry(row, None)))
     live = new_live
+
+
+def schedule_retry(job: dict, code: str | None) -> dict:
+    """Fields that schedule the job's next automatic retry, if it gets one.
+    code=None: the failure wasn't aria2's verdict on the link (retryable)."""
+    n = job["retries"]
+    if (code is not None and str(code) not in RETRYABLE_CODES) or n >= len(RETRY_DELAYS):
+        return {"retry_at": None}
+    # Jitter, so jobs that failed together (one throttling server) don't all
+    # come back at the same moment.
+    return {"retry_at": time.time() + RETRY_DELAYS[n] * random.uniform(0.8, 1.2)}
+
+
+retrying: set[int] = set()  # job ids with an automatic retry in progress
+
+
+def start_due_retries() -> None:
+    # Each in its own task: prepare() may take up to a minute per link and
+    # must not hold up the sync loop.
+    for job in db.due_retries(time.time()):
+        if job["id"] not in retrying:
+            retrying.add(job["id"])
+            asyncio.create_task(auto_retry(job))
+
+
+async def auto_retry(job: dict) -> None:
+    try:
+        db.update(job["id"], retries=job["retries"] + 1)
+        job = {**job, "retries": job["retries"] + 1}
+        try:
+            await retry(job, auto=True)
+        except HTTPException as exc:  # e.g. the link's host is down right now
+            if db.get(job["id"]):
+                db.update(job["id"], error=f"Retry {job['retries']} failed: {exc.detail}",
+                          **schedule_retry(job, None))
+    except Exception as exc:  # a task's exception would otherwise vanish
+        print(f"auto-retry error (job {job['id']}): {exc!r}", flush=True)
+    finally:
+        retrying.discard(job["id"])
 
 
 def stats() -> dict:
@@ -626,8 +703,10 @@ async def _pulse(app: FastAPI):
     while True:
         try:
             await sync()
-            if engine_ok and tick % 10 == 0:
-                await apply_settings()
+            if engine_ok:
+                start_due_retries()
+                if tick % 10 == 0:
+                    await apply_settings()
             if app.state.sockets:
                 if db.version != sent_version:
                     msg = full_snapshot()

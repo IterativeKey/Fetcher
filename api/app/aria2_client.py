@@ -6,7 +6,7 @@ from . import config
 
 # Fields the API needs; "files" carries the file path and source URI.
 JOB_KEYS = ["gid", "status", "totalLength", "completedLength",
-            "downloadSpeed", "connections", "dir", "files", "errorMessage"]
+            "downloadSpeed", "connections", "dir", "files", "errorCode", "errorMessage"]
 
 # Statuses aria2 keeps only as a result record (remove via removeDownloadResult).
 FINISHED = {"complete", "error", "removed"}

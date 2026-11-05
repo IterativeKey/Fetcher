@@ -41,6 +41,15 @@ builder:
   save-to-device link, add with a failing link kept in the box, phone width
   without horizontal scroll; no JS errors.
 
+## 0.5.0 (2026-11-05): automatic retry
+
+Temporary failures are resumed automatically with backoff and fewer
+connections per attempt (api/app/main.py, `schedule_retry`/`auto_retry`).
+Verified with a scripted test against fake aria2/egress (schedule, delays,
+connection halving, non-retryable codes, manual retry reset, cancel, egress
+failure, removal during a retry, giving up, lost paused jobs). Not yet run
+against real aria2 or on the NAS.
+
 ## Not verified
 
 - **A real NAS.** QNAP's Docker version, Container Station's compose,

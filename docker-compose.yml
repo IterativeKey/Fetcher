@@ -132,6 +132,8 @@ services:
       # Required: the API refuses to start without it.
       - FETCHER_API_TOKEN=${FETCHER_API_TOKEN}
       - MAX_CONCURRENT_DOWNLOADS=${MAX_CONCURRENT_DOWNLOADS:-5}
+      # Automatic retries start from this many connections and halve each time.
+      - MAX_CONNECTION_PER_SERVER=${MAX_CONNECTION_PER_SERVER:-8}
       # Same user as aria2, so it can serve and delete what aria2 wrote.
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
